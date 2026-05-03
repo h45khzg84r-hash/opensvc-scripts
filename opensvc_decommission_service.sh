@@ -2,7 +2,7 @@
 # opensvc_decommission_service.sh - Permanently remove a service and its LVM resources
 # Usage: opensvc_decommission_service.sh <SERVICE>
 # Author.:
-# Version: 20260501
+# Version: 20260502
 #
 # Stops, removes all LVs/VG/PVs/multipath and deletes the service from all nodes.
 # !! THIS ACTION IS IRREVERSIBLE - all data will be permanently lost !!
