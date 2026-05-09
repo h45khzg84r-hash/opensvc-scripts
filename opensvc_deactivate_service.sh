@@ -1,8 +1,8 @@
 #!/bin/bash
 # opensvc_deactivate_service.sh - Stop a service and rename it to a CHANGE number
 # Usage: opensvc_deactivate.sh <SERVICE> <CHANGE>
-# Author.:
-# Version: 20260419
+# Author.: adriano.costa
+# Version: 20260509
 #
 # Stops the service on all nodes, freezes and disables it to prevent any
 # restart attempt, then renames it to <CHANGE> (e.g. CHG0012345).
@@ -10,10 +10,6 @@
 
 SERVICE=$1
 CHANGE="${2:-}"
-
-#######################################################################
-# General Functions
-#######################################################################
 
 # -------------------
 usage()
@@ -41,17 +37,18 @@ usage()
 }
 
 # -------------------
-create_log()
+report_block()
 # -------------------
 {
-    local IP_PRI HEADER
-    IP_PRI="$(getent ahostsv4 "${PRIMARY}" | head -1 | awk '{print $1}')"
-    HEADER="Activity...: Deactivate OpenSVC service
- Service...: ${SERVICE}
- Renamed to: ${CHANGE:-N/A (not renamed)}
- Primary...: ${PRIMARY} (${IP_PRI}) 
- Standby...: ${STANDBY} (${IP_STA})"
-    write_log "${HEADER}"
+    cat <<EOF
+    
+Deactivate a service:    
+  Service Name..........: ${SERVICE}
+  Primary Node..........: ${PRIMARY} (${IP_PRI})
+  Standby Node..........: ${STANDBY} (${IP_STA})
+
+  Change Number.........: ${CHANGE:-n/a}
+EOF
 }
 
 # -------------------
@@ -85,38 +82,55 @@ init_vars()
     # Check CHANGE name not already in use (only if provided)
     [[ -n "$CHANGE" ]] && grep -Fxq "${CHANGE}" <<< "${SERVICES}" && return 7
 
-    # Resolve PRIMARY / STANDBY
+    # Set PRIMARY / STANDBY
     SVC_STATUS="$(om "${SERVICE}" print status --node "${NODES_CSV}" 2>/dev/null)"
     resolve_svc_nodes; RC=$?
-    (( RC == 1 )) && return 8
-    (( RC == 2 )) && return 9
-
+    if (( RC != 0 )); then
+        local SVC_AVAIL
+        SVC_AVAIL="$(om "${SERVICE}" print status 2>/dev/null | awk '/^avail[[:space:]]/ {print $2; exit}')"
+        if [[ "${SVC_AVAIL}" == "down" || "${SVC_AVAIL}" == "n/a" || -z "${SVC_AVAIL}" ]]; then
+            local NODE1 NODE2
+            NODE1="$(awk 'NR==1' <<< "${NODES}")"
+            NODE2="$(awk 'NR==2' <<< "${NODES}")"
+            if [[ -n "${NODE1}" && -n "${NODE2}" ]]; then
+                if [[ "${HOST}" == "${NODE1}" ]]; then
+                    PRIMARY="${NODE1}"
+                    STANDBY="${NODE2}"
+                else
+                    PRIMARY="${NODE2}"
+                    STANDBY="${NODE1}"
+                fi
+                log_warn "Service fully down — PRIMARY=${PRIMARY} STANDBY=${STANDBY} assigned from node list"
+                log_warn "Manual verification recommended before proceeding"
+            else
+                return 8
+            fi
+        else
+            (( RC == 1 )) && return 8
+            (( RC == 2 )) && return 9
+        fi
+    fi
     IP_PRI="$(getent ahostsv4 "${PRIMARY}" | head -1 | awk '{print $1}')"
     IP_STA="$(getent ahostsv4 "${STANDBY}" | head -1 | awk '{print $1}')"
     
     return 0
 }
 
-
 #######################################################################
 # MAIN
 #######################################################################
-LIBCOMMON="./lib_common.sh"
-if [[ -f "${LIBCOMMON}" ]]; then
-    source "${LIBCOMMON}"
-else	
-    echo "Library not found: ${LIBCOMMON}"
-    exit 1
-fi    
-LIBOPENSVC="./lib_opensvc.sh"
-if [[ -f "${LIBOPENSVC}" ]]; then
-    source "${LIBOPENSVC}"
-else	
-    echo "Library not found: ${LIBOPENSVC}"
-    exit 1
-fi    
+# Load LIBS
+MY_LIBS="./lib_common.sh ./lib_opensvc.sh"
+for MY_LIB in $MY_LIBS; do
+    if [[ -f "$MY_LIB" ]]; then
+        source "$MY_LIB"
+    else
+        echo "ERROR: Library not found: $MY_LIB"
+        exit 1
+    fi
+done
 
-[[ "$1" == "-h" || "$1" == "--help" ]] && usage
+[[ "$1" == "-h" || "$1" == "--help" || "$1" == "-?" ]] && usage
 [[ $# -lt 1 ]] && usage "Missing argument. SERVICE is required."
 
 init_logs
@@ -129,12 +143,10 @@ stage "Activity started in $(date +'%d/%m/%Y %H:%M')"
 phase "Collecting environment status"
 init_vars; RC=$?
 case $RC in
-    0)  update_status ok  "Information collected:\n"
-        show GREEN "\t\tService...............: ${SERVICE}"
-        show GREEN "\t\tChange Number.........: ${CHANGE}"
-        show GREEN "\t\tPrimary Node..........: ${PRIMARY} (${IP_PRI})"
-        show GREEN "\t\tStandby Node..........: ${STANDBY} (${IP_STA})"
-        show GREEN "" ;;
+    0)  while IFS= read -r LINE; do
+            show GREEN "\t\t${LINE}"
+        done < <(build_report_block)
+        update_status ok "All the information was collected" ;;
     1)  update_status err "Variable SERVICE is empty." ;;
     10) update_status err "SERVICE looks like a path (starts with /). Check arguments." ;;
     2)  update_status err "Invalid CHANGE name '${CHANGE}'. Use alphanumeric characters only." ;;
@@ -147,7 +159,7 @@ case $RC in
     *)  update_status err "Unexpected error in init_vars (RC=${RC})." ;;
 esac
 
-show RED "\t\t================================================================"
+show RED "\n\t\t================================================================"
 show RED "\t\t             !! WARNING - SERVICE DEACTIVATION !!"
 show RED "\t\t================================================================"
 if [[ -n "${CHANGE}" ]]; then
@@ -180,14 +192,13 @@ esac
 NODE=${PRIMARY}
 stage "On PRIMARY node (${PRIMARY})"
 ########################################
-
 phase "Freezing the OpenSVC Cluster nodes"
-opensvc_freeze node; RC=$?
+opensvc_freeze "${SERVICE}"; RC=$?
 case $RC in
-    0) update_status ok   "Nodes frozen successfully." ;;
-    2) update_status warn "Nodes are already frozen." ;;
-    5) update_status err  "Failed to freeze (RC=${RC}). Check 'om ${SERVICE} print status -r'." ;;
-    *) update_status err  "Unexpected error during freeze (RC=${RC})." ;;
+    0) update_status ok   "Service ${SERVICE} frozen successfully." ;;
+    2) update_status warn "Service ${SERVICE} is already frozen." ;;
+    5) update_status nok  "Failed to freeze (RC=${RC}). Check 'om ${SERVICE} print status -r'." ;;
+    *) update_status nok  "Unexpected error during freeze (RC=${RC})." ;;
 esac
 
 phase "Stopping service ${SERVICE} on all nodes"
@@ -270,17 +281,17 @@ if [[ -n "${CHANGE}" ]]; then
         if (( RC_NEW == 0 && RC_OLD != 0 )); then
             break
         elif (( RC_NEW != 0 && RC_OLD == 0 )); then 
-	    show YELLOW   "[Warning]\tWaiting for daemon to detect rename of services config (${COUNT}/${MAX})"
-	    FORCE=0
+	        show YELLOW   "[Warning]\tWaiting for daemon to detect rename of services config (${COUNT}/${MAX})"
+	        FORCE=0
         elif (( RC_NEW == 0 && RC_OLD == 0 )); then
-	    show YELLOW   "[Warning]\tBoth services visible - Forcing detect of rename       (${COUNT}/${MAX})"
-	    FORCE=1
-	else  # RC_NEW != 0 && RC_OLD != 0 
-	    show RED      "[Warning]\tNeither service visible - Forcing detect of rename     (${COUNT}/${MAX})"
-	    FORCE=1
+	        show YELLOW   "[Warning]\tBoth services visible - Forcing detect of rename       (${COUNT}/${MAX})"
+	        FORCE=1
+	    else  # RC_NEW != 0 && RC_OLD != 0 
+	        show RED      "[Warning]\tNeither service visible - Forcing detect of rename     (${COUNT}/${MAX})"
+	        FORCE=1
         fi
-	if (( FORCE )); then
-	   remote "mv -vf /etc/opensvc/${SERVICE}.conf /etc/opensvc/${DEACTIVATED_SERVICE}.conf 2>/dev/null \
+	    if (( FORCE )); then
+	        remote "mv -vf /etc/opensvc/${SERVICE}.conf /etc/opensvc/${DEACTIVATED_SERVICE}.conf 2>/dev/null \
                    && ssh root@${STANDBY} \"mv -vf /etc/opensvc/${SERVICE}.conf /etc/opensvc/${DEACTIVATED_SERVICE}.conf 2>/dev/null\""
 
         fi
@@ -314,6 +325,15 @@ else
     update_status skip "No CHANGE provided - service keeps name ${DEACTIVATED_SERVICE}."
 fi
 
+phase "Unfreezing the OpenSVC service"
+opensvc_unfreeze; RC=$?
+case $RC in
+    0) update_status ok   "Service unfrozen successfully." ;;
+    2) update_status warn "Service is already unfrozen." ;;
+    5) update_status nok  "Failed to unfreeze (RC=${RC}). Check 'om ${SERVICE} print status -r'." ;;
+    *) update_status err  "Unexpected error during freeze (RC=${RC})." ;;
+esac
+
 ########################################
 stage "POST-CHECK"
 ########################################
@@ -333,7 +353,6 @@ case $RC in
     0) update_status ok ;; 
     *) update_status err "Something wrong. The status must be FROZEN / DISABLED. Check Cluster status." ;;
 esac
-
 
 ########################################
 stage "Activity done SUCCESSFULLY in $(date +'%d/%m/%Y %H:%M')"
@@ -376,5 +395,5 @@ else
     show BLUE "\t\t# om ${OLD_SERVICE} sync all"
 fi
 show BLUE "\n\t\tLog: ${FINAL_LOG}"
-create_log
+write_log "$(report_block)"
 exit 0

@@ -2,7 +2,7 @@
 # opensvc_decommission_cluster.sh - Remove OpenSVC and LVM from all cluster nodes
 # Usage: opensvc_decommission_cluster.sh
 # Author.:
-# Version: 20260502
+# Version: 20260509
 #
 # Validates that no services or LVM resources exist before proceeding.
 # Uninstalls OpenSVC packages and cleans up all configuration on all nodes.
@@ -175,7 +175,7 @@ while IFS= read -r TARGET_NODE; do
     NODE="${TARGET_NODE}"
 
     phase "Backing up OpenSVC configuration"
-    run_command "mkdir -vp "${BACKUP_DIR}""; RC=$?
+    run_command "mkdir -vp \"${BACKUP_DIR}\""; RC=$?
 
     run_command "tar czf ${BACKUP_DIR}/${TARGET_NODE}_opensvc_backup.tar.gz /etc/opensvc /var/lib/opensvc 2>/dev/null"; RC=$?
     update_status ok "Configuration backed up to ${BACKUP_DIR} (local node only)."

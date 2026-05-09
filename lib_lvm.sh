@@ -1,6 +1,8 @@
 #!/bin/bash
 # lib_lvm.sh - LVM, multipath and filesystem helper functions
 # Source this file; do not execute it directly.
+# Author.: adriano.costa
+# Version: 20260508
 
 [[ "${BASH_SOURCE[0]}" == "$0" ]] && { echo "This file must be sourced, not executed."; exit 1; }
 
@@ -578,8 +580,6 @@ make_mkfs()
     return 0
 }
 
-
-
 # -------------------
 cleanup_lvm_on_node()
 # -------------------
@@ -597,7 +597,7 @@ cleanup_lvm_on_node()
     local SAVED_NODE="${NODE}"
     NODE="${PRIMARY}"
 
-    local LV_LIST PV_LIST ALL_MOUNTS DM_DEV PROCS RC_FUSER RC=0 TOTAL=0  RAW_RUNNING=""
+    local LV_LIST PV_LIST ALL_MOUNTS DM_DEV RC_FUSER RC=0 TOTAL=0  RAW_RUNNING=""
 
     LV_LIST="$(remote "lvs ${VG} --noheadings -o lv_dm_path 2>/dev/null | xargs")"
     PV_LIST="$(remote "pvs --select vg_name=${VG} --noheadings -o pv_name 2>/dev/null | xargs")"
@@ -616,7 +616,6 @@ cleanup_lvm_on_node()
     for PV in ${PV_LIST}; do
         DM_DEV="$(remote "readlink -f ${PV} 2>/dev/null")"
         run_command "timeout 3 fuser -v ${PV} ${DM_DEV}"; RC_FUSER=$?
-        #PROCS="$(timeout 3 fuser -v "${PV}" "${DM_DEV}" 2>/dev/null)"
         if (( RC_FUSER == 124 )); then
             RAW_RUNNING="${RAW_RUNNING}\n${PV}: (timeout - check manually)"
         elif [[ -n "${OUTPUT}" ]]; then
@@ -709,16 +708,14 @@ cleanup_lvm_on_node()
             return 4 ;;
     esac
 
-
     # Remove PVs, flush multipath, delete SCSI devices
-
     if (( RC )); then
         NODE="${SAVED_NODE}"
         return ${RC}
     else	
-	TOTAL=0    
+        TOTAL=0    
 
-	phase "Checking multipath status"
+    	phase "Checking multipath status"
         run_command "multipath -ll"; RC=$?
         case $RC in
             0) update_status ok ;;
@@ -728,66 +725,66 @@ cleanup_lvm_on_node()
         for PV in ${PV_LIST}; do
             local LUN="${PV##*/}"
 
-	    phase "Removing ${PV}"
-            run_command "pvremove -y ${PV}"; RC=$?
+    	    phase "Removing ${PV}"
+           run_command "pvremove -y ${PV}"; RC=$?
             case $RC in
-                 0) update_status ok  "${PV} has been removed sucessfully." ;;
-                 *) update_status nok "The removal of the ${PV} failed (RC=${RC})." ;;
-            esac		    
-	    (( TOTAL += RC ))
+               0) update_status ok  "${PV} has been removed sucessfully." ;;
+               *) update_status nok "The removal of the ${PV} failed (RC=${RC})." ;;
+           esac		    
+    	    (( TOTAL += RC ))
 
-            PATHS="$(remote "multipath -ll ${LUN} 2>/dev/null | awk '/sd[a-z]+/ {print \$3}'")"
+           PATHS="$(remote "multipath -ll ${LUN} 2>/dev/null | awk '/sd[a-z]+/ {print \$3}'")"
 
-	    phase "Removing multipath ${LUN}"
+    	    phase "Removing multipath ${LUN}"
             run_command "multipath -f ${LUN}"; RC=$?
-	    (( TOTAL += RC ))
-            for DEV in ${PATHS}; do
+    	    (( TOTAL += RC ))
+           for DEV in ${PATHS}; do
                 run_command "echo 1 > /sys/block/${DEV}/device/delete"; RC=$?
-	        (( TOTAL += RC ))
-                case $RC in
-                     0) update_status ok  "Path ${DEV} has been removed sucessfully." ;;
-                     *) update_status nok "Failed to remove SCSI device ${DEV} (RC=${RC})." ;;
-	        esac	
-            done
+    	        (( TOTAL += RC ))
+               case $RC in
+                   0) update_status ok  "Path ${DEV} has been removed sucessfully." ;;
+                    *) update_status nok "Failed to remove SCSI device ${DEV} (RC=${RC})." ;;
+    	        esac	
+           done
         done
-	(( TOTAL )) && { NODE="${SAVED_NODE}"; return 5; }
+    	(( TOTAL )) && { NODE="${SAVED_NODE}"; return 5; }
 
-	phase "Checking multipath status after changes"
-        run_command "multipath -ll"; RC=$?
-        case $RC in
-            0) update_status ok ;;
+    	phase "Checking multipath status after changes"
+       run_command "multipath -ll"; RC=$?
+       case $RC in
+           0) update_status ok ;;
             *) update_status warn "multipath -ll failed (RC=${RC})." ;;
         esac
 
-        # Refresh standby
+       # Refresh standby
         NODE="${STANDBY}"
-	TOTAL=0
-	phase "Running vgscan on STANDBY node (${STANDBY})"
-        run_command "vgscan"; RC=$?
-        case $RC in
-             0) update_status ok  "\t\t[Success]\tvgscan has been performed successfully." ;;
-             *) show RED          "\t\t[Failure]\tvgscan failed on STANDBY node." ;;
+    	TOTAL=0
+    	phase "Running vgscan on STANDBY node (${STANDBY})"
+       run_command "vgscan"; RC=$?
+       case $RC in
+           0) update_status ok  "\t\t[Success]\tvgscan has been performed successfully." ;;
+            *) show RED          "\t\t[Failure]\tvgscan failed on STANDBY node." ;;
         esac		    
-	run_command "vgs"
-	(( TOTAL += RC ))
+    	run_command "vgs"
+    	(( TOTAL += RC ))
 
-	phase "Running pvscan --cache on STANDBY node (${STANDBY})"
-        run_command "pvscan --cache"; RC=$?
+    	phase "Running pvscan --cache on STANDBY node (${STANDBY})"
+       run_command "pvscan --cache"; RC=$?
         case $RC in
-             0) update_status ok  "\t\t[Success]\tpvscan has been performed successfully." ;;
-             *) show RED          "\t\t[Failure]\tpvscan failed on STANDBY node." ;;
-        esac		    
-        run_command "pvs"
-	(( TOTAL += RC ))
+           0) update_status ok  "\t\t[Success]\tpvscan has been performed successfully." ;;
+           *) show RED          "\t\t[Failure]\tpvscan failed on STANDBY node." ;;
+       esac		    
+       run_command "pvs"
+    	(( TOTAL += RC ))
 
-	phase "Running multipath -r on STANDBY node (${STANDBY})"
-        run_command "multipath -r"; RC=$?
-        case $RC in
-             0) update_status ok  "\t\t[Success]\tmultipath has been performed successfully.";;
-             *) show RED          "\t\t[Failure]\tmultipath failed on STANDBY node." ;;
-        esac		    
-	(( TOTAL += RC ))
-	(( TOTAL )) && { NODE="${SAVED_NODE}"; return 6; }
+    	phase "Running multipath -r on STANDBY node (${STANDBY})"
+       run_command "multipath -r"; RC=$?
+       case $RC in
+           0) update_status ok  "\t\t[Success]\tmultipath has been performed successfully.";;
+           *) show RED          "\t\t[Failure]\tmultipath failed on STANDBY node." ;;
+       esac		    
+    	(( TOTAL += RC ))
+    	(( TOTAL )) && { NODE="${SAVED_NODE}"; return 6; }
     fi
     return 0
 }

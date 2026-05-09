@@ -6,10 +6,6 @@
 
 SERVICE=$1
 
-#######################################################################
-# General Functions
-#######################################################################
-
 # -------------------
 usage()
 # -------------------
@@ -27,19 +23,18 @@ usage()
     exit 1
 }
 
-
 # -------------------
-create_log()
+report_block()
 # -------------------
 {
-    local IP_PRI IP_STA HEADER
-    IP_PRI="$(getent ahostsv4 "${PRIMARY}" | head -1 | awk '{print $1}')"
-    IP_STA="$(getent ahostsv4 "${STANDBY}" | head -1 | awk '{print $1}')"
-    HEADER="Activity...: Switch OpenSVC service
- Service...: ${SERVICE}
- From......: ${PRIMARY} (${IP_PRI})
- To........: ${STANDBY} (${IP_STA})"
-    write_log "${HEADER}"
+    cat <<EOF
+
+Switch OpenSVC service:
+  Service Name ......: ${SERVICE}"
+  Primary Node.......: ${PRIMARY} (${IP_PRI})"
+  Standby Node.......: ${STANDBY} (${IP_STA})"
+
+EOF
 }
 
 # -------------------
@@ -68,16 +63,21 @@ init_vars()
     return 0
 }
 
-
-
 #######################################################################
 # MAIN
 #######################################################################
-LIBCOMMON="./lib_common.sh"
-[[ -f "${LIBCOMMON}" ]]  || { echo "Library not found: ${LIBCOMMON}"; exit 1; }  && source "${LIBCOMMON}"
-LIBOPENSVC="./lib_opensvc.sh"
-[[ -f "${LIBOPENSVC}" ]] || { echo "Library not found: ${LIBOPENSVC}"; exit 1; } && source "${LIBOPENSVC}"
-[[ "$1" == "-h" || "$1" == "--help" ]] && usage
+# Load LIBS
+MY_LIBS="./lib_common.sh ./lib_opensvc.sh"
+for MY_LIB in $MY_LIBS; do
+    if [[ -f "$MY_LIB" ]]; then
+        source "$MY_LIB"
+    else
+        echo "ERROR: Library not found: $MY_LIB"
+        exit 1
+    fi
+done
+
+[[ "$1" == "-h" || "$1" == "--help" || "$1" == "-?" ]] && usage
 [[ $# -lt 1 ]] && usage "Missing argument. SERVICE is required."
 SWITCH_TIMEOUT=180   # seconds to wait for the switch to complete
 
@@ -91,11 +91,10 @@ stage "Activity started in $(date +'%d/%m/%Y %H:%M')"
 phase "Collecting environment status"
 init_vars; RC=$?
 case $RC in
-    0)  update_status ok  "Information collected:\n"
-        show GREEN "\t\tService............: ${SERVICE}"
-        show GREEN "\t\tPrimary Node.......: ${PRIMARY} (${IP_PRI})"
-        show GREEN "\t\tStandby Node.......: ${STANDBY} (${IP_STA})"
-        show GREEN "" ;;
+    0)  while IFS= read -r LINE; do
+            show GREEN "\t\t${LINE}"
+        done < <(build_report_block)
+        update_status ok "All the information was collected" ;;
     1)  update_status err "Variable SERVICE is empty." ;;
     2)  update_status err "Cannot list cluster nodes." ;;
     3)  update_status err "Cannot list cluster services." ;;
@@ -105,10 +104,11 @@ case $RC in
     *)  update_status err "Unexpected error in init_vars (RC=${RC})." ;;
 esac
 
+prompt_continue "Can i switch it?" || update_status no_go "Aborting - check all information before continuing."
+
 ########################################
 stage "PRE-CHECK"
 ########################################
-
 phase "Status of ${SERVICE} on primary (${PRIMARY})"
 check_ml_status sync prstart provisioned rid; RC=$?
 case $RC in
@@ -155,7 +155,6 @@ esac
 NODE=${PRIMARY}
 stage "On PRIMARY node (${PRIMARY})"
 ########################################
-
 phase "Switching ${SERVICE} to node ${STANDBY}"
 run_command -l "om ${SERVICE} switch --wait --time ${SWITCH_TIMEOUT}"; RC=$?
 case $RC in
@@ -201,5 +200,5 @@ show BLUE ""
 show BLUE "[Success]\tService ${SERVICE} has been switched successfully."
 show BLUE "\t\tPRIMARY node is now ${PRIMARY}."
 show BLUE "\n\t\tLog: ${FINAL_LOG}"
-create_log
+write_log "$(report_block)"
 exit 0

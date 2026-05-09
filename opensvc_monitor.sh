@@ -1,7 +1,7 @@
 #!/bin/bash
-# opensvc_monitor.sh - tmux monitoring wrapper for OpenSVC maintenance scripts
+# opensvc_monitor.sh - tmux monitoring SCRIPT_TEMP for OpenSVC maintenance scripts
 # Usage: opensvc_monitor.sh <command> [args...]
-# Author.:
+# Author.: adriano.costa
 # Version: 20260419
 #
 # Commands:
@@ -106,13 +106,13 @@ new_pane()
     TMUX_MIN=$(tmux -V | grep -oP '\d+' | sed -n '2p')
 
     if (( TMUX_MAJ > 3 || ( TMUX_MAJ == 3 && TMUX_MIN >= 1 ) )); then
-        # >= 3.1: -l PERCENT% and -P -F supported
+        # >= 3.1: -l % and -P -F 
         PANE_ID=$(tmux split-window "$DIRECTION" -l "${PERCENT}%" -t "$TARGET" -P -F "#{pane_id}" 2>&1)
     elif (( TMUX_MAJ > 2 || ( TMUX_MAJ == 2 && TMUX_MIN >= 1 ) )); then
-        # >= 2.1: -P -F supported but size uses -p PERCENT
+        # >= 2.1: -P -F but size uses -p %
         PANE_ID=$(tmux split-window "$DIRECTION" -p "$PERCENT" -t "$TARGET" -P -F "#{pane_id}" 2>&1)
     else
-        # < 2.1 (e.g. 1.8): no -P flag - split then query the active pane
+        # < 2.1 (e.g. 1.8): no -P flag
         tmux split-window "$DIRECTION" -p "$PERCENT" -t "$TARGET" 2>&1
         PANE_ID=$(tmux display-message -p "#{pane_id}")
     fi
@@ -279,22 +279,20 @@ MONITOR_04="watch -t -n 0.5 'cat /tmp/phase.log | tail -n \$((\$(tput lines) - 1
 ########################################
 # Build tmux session
 ########################################
-
-# Write a wrapper to avoid quoting issues inside tmux new-session
-WRAPPER=$(mktemp /tmp/opensvc_monitor_XXXX.sh)
-chmod +x "$WRAPPER"
-cat > "$WRAPPER" << WRAPPER_EOF
+SCRIPT_TEMP=$(mktemp /tmp/opensvc_monitor_XXXX.sh)
+chmod +x "$SCRIPT_TEMP"
+cat > "$SCRIPT_TEMP" << SCRIPT_TEMP_EOF
 #!/bin/bash
 ${WORKER_PATH} ${ARGS}
 echo -e "\033[5;33m"
 read -rp "[Press ENTER to close all panes]"
 echo -e "\033[0m"
 tmux kill-session -t "${SESSION}" 2>/dev/null
-WRAPPER_EOF
+SCRIPT_TEMP_EOF
 
 tmux kill-session -t "$SESSION" 2>/dev/null || true
-tmux new-session -d -s "$SESSION" -x "$COLS" -y "$LINES" "bash $WRAPPER" || \
-    { echo "Error: failed to create tmux session." >&2; rm -f "$WRAPPER"; exit 1; }
+tmux new-session -d -s "$SESSION" -x "$COLS" -y "$LINES" "bash $SCRIPT_TEMP" || \
+    { echo "Error: failed to create tmux session." >&2; rm -f "$SCRIPT_TEMP"; exit 1; }
 
 P_TOP_LEFT=$(tmux display-message -t "${SESSION}":0 -p "#{pane_id}")
 
@@ -334,6 +332,6 @@ fi
 tmux select-pane -t "$P_TOP_LEFT"
 tmux attach-session -t "$SESSION"
 
-# Session ended (kill-session ran in wrapper) - cleanup and show log
-rm -f "$WRAPPER" 2>/dev/null
+# Session ended (kill-session ran in SCRIPT_TEMP) - cleanup and show log
+rm -f "$SCRIPT_TEMP" 2>/dev/null
 show_final_log

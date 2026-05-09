@@ -1,17 +1,13 @@
 #!/bin/bash
 # opensvc_decommission_service.sh - Permanently remove a service and its LVM resources
 # Usage: opensvc_decommission_service.sh <SERVICE>
-# Author.:
-# Version: 20260502
+# Author.: adriano.costa
+# Version: 20260509
 #
 # Stops, removes all LVs/VG/PVs/multipath and deletes the service from all nodes.
 # !! THIS ACTION IS IRREVERSIBLE - all data will be permanently lost !!
 
 SERVICE=$1
-
-#######################################################################
-# General Functions
-#######################################################################
 
 # -------------------
 usage()
@@ -38,20 +34,22 @@ usage()
 }
 
 # -------------------
-create_log()
+report_block()
 # -------------------
 {
-    local IP_PRI HEADER
-    IP_PRI="$(getent ahostsv4 "${PRIMARY}" | head -1 | awk '{print $1}')"
-    HEADER="Activity...: Decommission OpenSVC service
- Service...: ${SERVICE}
- VG Name...: ${VG_NAME}
- LVOLs list: ${LV_LIST:-N/A}
- PVs List..: ${PV_LIST:-N/A}
- Primary...: ${PRIMARY} (${IP_PRI})
- Standby...: ${STANDBY} (${IP_STA})"
- 
-    write_log "${HEADER}"
+    cat <<EOF
+
+Decommission OpenSVC service:    
+  Service Name..........: ${SERVICE}
+  Primary Node..........: ${PRIMARY} (${IP_PRI})
+  Standby Node..........: ${STANDBY} (${IP_STA})
+
+LVM service structure: 
+  VG Name...............: ${VG_NAME}
+  LVOLs list............: ${LV_LIST}
+  PVs List..............: ${PV_LIST}
+
+EOF
 }
 
 # -------------------
@@ -74,7 +72,6 @@ init_vars()
     grep -Fxq "${SERVICE}" <<< "${SERVICES}" || return 4
 
     # Resolve PRIMARY / STANDBY
-    SVC_STATUS="$(om "${SERVICE}" print status --node "${NODES_CSV}" 2>/dev/null)"
     resolve_svc_nodes; RC=$?
     # If service is fully down, PRIMARY may not resolve - use local host
     (( RC == 1 )) && { PRIMARY="${HOST}"; NODE="${HOST}"; STANDBY="none"; return 0; }
@@ -91,40 +88,24 @@ init_vars()
     # Collect PVs belonging to this VG (for later removal)
     [[ -n "$VG_NAME" ]] && PV_LIST="$(remote "pvs --select vg_name=${VG_NAME} --noheadings -o pv_name 2>/dev/null | xargs")"
 
-    IP_PRI="$(getent ahostsv4 "${PRIMARY}" | head -1 | awk '{print $1}')"
-    IP_STA="$(getent ahostsv4 "${STANDBY}" | head -1 | awk '{print $1}')"
-
     return 0
 }
-
-
 
 #######################################################################
 # MAIN
 #######################################################################
-LIBCOMMON="./lib_common.sh"
-if [[ -f "${LIBCOMMON}" ]]; then
-    source "${LIBCOMMON}"
-else
-    echo "Library not found: ${LIBCOMMON}"
-    exit 1
-fi
-LIBLVM="./lib_lvm.sh"
-if [[ -f "${LIBLVM}" ]]; then
-    source "${LIBLVM}"
-else
-    echo "Library not found: ${LIBLVM}"
-    exit 1
-fi
-LIBOPENSVC="./lib_opensvc.sh"
-if [[ -f "${LIBOPENSVC}" ]]; then
-    source "${LIBOPENSVC}"
-else
-    echo "Library not found: ${LIBOPENSVC}"
-    exit 1
-fi
+# Load LIBS
+MY_LIBS="./lib_common.sh ./lib_lvm.sh ./lib_opensvc.sh"
+for MY_LIB in $MY_LIBS; do
+    if [[ -f "$MY_LIB" ]]; then
+        source "$MY_LIB"
+    else
+        echo "ERROR: Library not found: $MY_LIB"
+        exit 1
+    fi
+done
 
-[[ "$1" == "-h" || "$1" == "--help" ]] && usage
+[[ "$1" == "-h" || "$1" == "--help" || "$1" == "-?" ]] && usage
 [[ $# -lt 1 ]] && usage "Missing argument. SERVICE is required."
 
 init_logs
@@ -137,14 +118,10 @@ stage "Activity started in $(date +'%d/%m/%Y %H:%M')"
 phase "Collecting environment status"
 init_vars; RC=$?
 case $RC in
-    0)  update_status ok  "Information collected:\n"
-        show GREEN "\t\tService...............: ${SERVICE}"
-        show GREEN "\t\tVG Name...............: ${VG_NAME}"
-        show GREEN "\t\tLVOLs list............: ${LV_LIST}"
-        show GREEN "\t\tPVs List..............: ${PV_LIST}"
-        show GREEN "\t\tPrimary Node..........: ${PRIMARY} (${IP_PRI})"
-        show GREEN "\t\tStandby Node..........: ${STANDBY} (${IP_STA})"
-        show GREEN "" ;;
+    0)  while IFS= read -r LINE; do
+            show GREEN "\t\t${LINE}"
+        done < <(build_report_block)
+        update_status ok "All the information was collected" ;;
     1)  update_status err "Variable SERVICE is empty." ;;
     5)  update_status err "SERVICE looks like a path (starts with /). Check arguments." ;;
     2)  update_status err "Cannot list cluster nodes." ;;
@@ -174,7 +151,6 @@ prompt_continue "Are you ABSOLUTELY SURE? This cannot be undone." || update_stat
 ########################################
 stage "PRE-CHECK"
 ########################################
-
 phase "Status of ${SERVICE} before decommission"
 NODE=${PRIMARY}
 check_ml_status; RC=$?
@@ -187,7 +163,6 @@ esac
 NODE=${PRIMARY}
 stage "On PRIMARY node (${PRIMARY})"
 ########################################
-
 phase "Freezing the OpenSVC Cluster service"
 opensvc_freeze "${SERVICE}"; RC=$?
 case $RC in
@@ -225,7 +200,6 @@ esac
 ########################################
 stage "POST-CHECK"
 ########################################
-
 phase "Verifying ${SERVICE} no longer exists"
 if om svc ls 2>/dev/null | grep -Fxq "${SERVICE}"; then
     update_status err "Service ${SERVICE} still visible. Check manually."
@@ -261,5 +235,5 @@ show BLUE ""
 show BLUE "\t[Success]\tService ${SERVICE} permanently decommissioned."
 show BLUE "\t\t\tAll data has been permanently destroyed."
 show BLUE "\n\t\tLog: ${FINAL_LOG}"
-create_log
+write_log "$(report_block)"
 exit 0

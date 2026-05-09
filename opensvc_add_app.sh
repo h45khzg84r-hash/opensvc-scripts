@@ -1,7 +1,7 @@
 #!/bin/bash
 # opensvc_add_app.sh - Adds a new app resource to an OpenSVC HA service
 # Usage: opensvc_add_app.sh <SERVICE> <APP_PATH> [APP_NAME]
-# Author.:
+# Author.: adriano.costa
 # Version: 20260419
 #
 # The app resource RID will be app#<APP_NAME> (or app#<script_basename>).
@@ -10,10 +10,6 @@
 SERVICE=$1
 APP_PATH=$2
 APP_NAME="${3:-}"
-
-#######################################################################
-# General Functions
-#######################################################################
 
 # -------------------
 usage()
@@ -43,22 +39,28 @@ usage()
 }
 
 # -------------------
-create_log()
+report_block()
 # -------------------
 {
-    local HEADER
-    HEADER="Activity...: Add app resource to an OpenSVC service
- Service...: ${SERVICE}
- Resource..: ${NEW_RID:-N/A}
- Script....: ${APP_PATH}
- Start.....: true
- Stop......: true
- Check.....: true
- Optional..: true
- Primary...: ${PRIMARY} (${IP_PRI})
- Standby...: ${STANDBY} (${IP_STA})"
+    cat <<EOF
 
-    write_log "${HEADER}"
+Add app resource to an OpenSVC service:
+  Service Name ......: ${SERVICE}"
+  Primary Node.......: ${PRIMARY} (${IP_PRI})"
+  Standby Node.......: ${STANDBY} (${IP_STA})"
+
+New Application details:
+  Application Name...: ${APP_NAME}"
+  Resource ID........: ${NEW_RID:-N/A}
+
+Resource parameters:
+  Script.............: ${APP_PATH}
+  Start..............: ${P_START}
+  Stop...............: ${P_STOP}
+  Check..............: ${P_CHECK}
+  Optional...........: ${P_OPTIONAL}
+
+EOF
 }
 
 # -------------------
@@ -84,15 +86,11 @@ init_vars()
     grep -Fxq "${SERVICE}" <<< "${SERVICES}" || return 7
 
     # Resolve PRIMARY / STANDBY
-    SVC_STATUS="$(om "${SERVICE}" print status --node "${NODES_CSV}" 2>/dev/null)"
     resolve_svc_nodes; RC=$?
     (( RC == 1 )) && return 8
     (( RC == 2 )) && return 9
 
-    IP_PRI="$(getent ahostsv4 "${PRIMARY}" | head -1 | awk '{print $1}')"
-    IP_STA="$(getent ahostsv4 "${STANDBY}" | head -1 | awk '{print $1}')"
-
-    # Check script exists and is executable on primary node
+     # Check script exists and is executable on primary node
     remote "test -f ${APP_PATH}" || return 10
     remote "test -x ${APP_PATH}" || return 11
 
@@ -106,25 +104,21 @@ init_vars()
     return 0
 }
 
-
 #######################################################################
 # MAIN
 #######################################################################
-LIBCOMMON="./lib_common.sh"
-if [[ ! -f "${LIBCOMMON}" ]]; then
-    echo "Library not found: ${LIBCOMMON}"
-    exit 1
-fi
-source "${LIBCOMMON}"
+# Load LIBS
+MY_LIBS="./lib_common.sh ./lib_opensvc.sh"
+for MY_LIB in $MY_LIBS; do
+    if [[ -f "$MY_LIB" ]]; then
+        source "$MY_LIB"
+    else
+        echo "ERROR: Library not found: $MY_LIB"
+        exit 1
+    fi
+done
 
-LIBOPENSVC="./lib_opensvc.sh"
-if [[ ! -f "${LIBOPENSVC}" ]]; then
-    echo "Library not found: ${LIBOPENSVC}"
-    exit 1
-fi
-source "${LIBOPENSVC}"
-
-[[ "$1" == "-h" || "$1" == "--help" ]] && usage
+[[ "$1" == "-h" || "$1" == "--help" || "$1" == "-?" ]] && usage
 [[ $# -lt 2 ]] && usage "Missing arguments. Expected at least 2, got $#."
 
 init_logs
@@ -137,14 +131,7 @@ stage "Activity started in $(date +'%d/%m/%Y %H:%M')"
 phase "Collecting environment status"
 init_vars; RC=$?
 case $RC in
-    0)  update_status ok  "Information collected:\n"
-        show GREEN "\t\tService...............: ${SERVICE}"
-        show GREEN "\t\tNew Application.......: ${APP_NAME}"
-        show GREEN "\t\tNew Application path..: ${APP_PATH}"
-        show GREEN "\t\tNew Resource ID.......: ${NEW_RID}"
-        show GREEN "\t\tPrimary Node..........: ${PRIMARY} (${IP_PRI})"
-        show GREEN "\t\tStandby Node..........: ${STANDBY} (${IP_STA})"
-        show GREEN "" ;;
+    0)  ;;
     1)  update_status err  "Variable SERVICE is empty." ;;
     2)  update_status err  "SERVICE looks like a path (starts with /). Did you swap SERVICE and APP_PATH?" ;;
     3)  update_status err  "Variable APP_PATH is empty." ;;
@@ -158,6 +145,38 @@ case $RC in
    11)  update_status err  "Script ${APP_PATH} is not executable on ${PRIMARY}." ;;
    12)  update_status err  "Application ${APP_NAME} (${APP_PATH}) is already created in ${SERVICE}. Nothing to do." ;;
 esac
+
+# App Start
+show BLUE "\nResource parameter: start"
+show BLUE "============================="
+show BLUE "  The OpenSVC engine will call the script with start when the service starts [default: true]."
+P_START=$(select_bool "start" "true")
+
+# App Stop
+show BLUE "\nResource parameter: stop"
+show BLUE "============================="
+show BLUE "  The engine will call the script with stop when the service stops [default: true]."
+P_STOP=$(select_bool "stop" "true")
+
+# App Check
+show BLUE "\nResource parameter: check"
+show BLUE "============================"
+show BLUE "  The monitor will periodically call the script with check to verify the resource state [default: true]."
+P_CHECK=$(select_bool "check" "true")
+
+# App Optional
+show BLUE "\nResource parameter: optional"
+show BLUE "=============================="
+show BLUE "  If true, it does not bring the service down; it is treated as non-critical [default: true]."
+P_OPTIONAL=$(select_bool "optional" "true")
+
+show GREEN ""
+while IFS= read -r LINE; do
+    show GREEN "\t\t${LINE}"
+done < <(build_report_block)
+
+prompt_continue "Everything is ok?" || update_status no_go "Aborting - check all information before continuing."
+update_status ok  "All the information was collected.\n"
 
 ########################################
 stage "PRE-CHECK"
@@ -184,7 +203,6 @@ esac
 NODE=${PRIMARY}
 stage "On PRIMARY node (${PRIMARY})"
 ########################################
-
 phase "Freezing the OpenSVC Cluster service"
 opensvc_freeze; RC=$?
 case $RC in
@@ -196,7 +214,7 @@ esac
 
 # Add resource only if it does not yet exist in the service
 phase "Adding ${NEW_RID} to ${SERVICE}"
-run_command -l "om ${SERVICE} set --kw ${NEW_RID}.script=${APP_PATH} --kw ${NEW_RID}.start=true --kw ${NEW_RID}.stop=true --kw ${NEW_RID}.check=true --kw ${NEW_RID}.optional=true"; RC=$?
+run_command -l "om ${SERVICE} set --kw ${NEW_RID}.script=${APP_PATH} --kw ${NEW_RID}.start=${P_START} --kw ${NEW_RID}.stop=${P_STOP} --kw ${NEW_RID}.check=${P_CHECK} --kw ${NEW_RID}.optional=${P_OPTIONAL}"; RC=$?
 case $RC in
     0) update_status ok  "Resource ${NEW_RID} (script=${APP_PATH}) added to ${SERVICE}." ;;
     *) update_status err "Failed to add ${NEW_RID}. Check 'om ${SERVICE} print resinfo'." ;;
@@ -261,7 +279,6 @@ esac
 NODE=${STANDBY}
 stage "On STANDBY node (${STANDBY})"
 ########################################
-
 phase "Status of ${SERVICE} on standby (${STANDBY})"
 check_ml_status; RC=$?
 case $RC in
@@ -279,6 +296,5 @@ show BLUE ""
 show BLUE "[Success]\tResource ${NEW_RID} was added in the ${SERVICE}."
 show BLUE "\t\tThe script ${APP_PATH} was started successfully."
 show BLUE "\n\t\tLog: ${FINAL_LOG}"
-create_log
+write_log "$(report_block)"
 exit 0
-

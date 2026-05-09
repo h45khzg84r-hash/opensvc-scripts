@@ -1,6 +1,8 @@
 #!/bin/bash
 # lib_opensvc.sh - OpenSVC cluster helper functions
 # Source this file; do not execute it directly.
+# Author.: adriano.costa
+# Version: 20260508
 
 [[ "${BASH_SOURCE[0]}" == "$0" ]] && { echo "This file must be sourced, not executed."; exit 1; }
 
@@ -8,7 +10,7 @@
 # INDEX
 #######################################################################
 #
-#  resolve_svc_nodes()      Parse SVC_STATUS and set PRIMARY / STANDBY / NODE
+#  resolve_svc_nodes()      Set PRIMARY / STANDBY / NODE
 #  refresh_ml_status()      Refresh OpenSVC service status variables from om
 #  opensvc_freeze()         Freeze the cluster node via om node freeze
 #  opensvc_unfreeze()       Unfreeze the cluster node or service via om thaw
@@ -25,7 +27,7 @@
 # -------------------
 resolve_svc_nodes()
 # -------------------
-# Description: Parse the output of "om <svc> print status" to determine
+# Description: Run "om <svc> print status" to determine
 #              which node is PRIMARY (up/warn) and which is STANDBY (down).
 #              Sets NODE to PRIMARY.
 #
@@ -42,11 +44,14 @@ resolve_svc_nodes()
 #   2  = STANDBY could not be determined
 # -------------------
 {
+    SVC_STATUS="$(om "${SERVICE}" print status --node "${NODES_CSV}" 2>/dev/null)"
     PRIMARY="$(awk '/^\s+`-/ || /^\s+\|-/ {node=$2} node && $3~/^(up|warn)/ {print node; exit}' <<< "${SVC_STATUS}")"
     [[ -z "$PRIMARY" ]] && return 1
     STANDBY="$(awk '/^\s+`-/ || /^\s+\|-/ {node=$2} node && $3=="down" {print node; exit}' <<< "${SVC_STATUS}")"
     [[ -z "$STANDBY" ]] && return 2
     NODE="${PRIMARY}"
+    IP_PRI="$(getent ahostsv4 "${PRIMARY}" | head -1 | awk '{print $1}')"
+    IP_STA="$(getent ahostsv4 "${STANDBY}" | head -1 | awk '{print $1}')"
     return 0
 }
 
@@ -81,25 +86,25 @@ refresh_ml_status()
     [[ -z "$ML_RAW" ]] && return 1
 
     case "$VAR" in all|ML_STARTED)
-	ML_STARTED="$(awk '/started/ && !/down/ {c++} END {print c+0}' <<< "${ML_RAW}")"
+	    ML_STARTED="$(awk '/started/ && !/down/ {c++} END {print c+0}' <<< "${ML_RAW}")"
         ML_STARTED="${ML_STARTED:-0}" ;; esac
     case "$VAR" in all|ML_WARN)
         ML_WARN="$(awk '$3 ~ /W/ { print $2 }' <<< "${ML_RAW}")" ;; esac
     case "$VAR" in all|ML_FROZEN)
         ML_FROZEN="$(awk '/frozen/' <<< "${ML_RAW}" | sed 's/node frozen/node_frozen/' | xargs | cut -d' ' -f4- | cut -d',' -f1)" ;; esac
     case "$VAR" in all|ML_DISK)
-	ML_DISK="$(awk '$2=="disk#1pr" && $4!="up" {print 1; exit}' <<< "${ML_RAW}")"
-	ML_DISK="${ML_DISK:-0}" ;; esac
+	    ML_DISK="$(awk '$2=="disk#1pr" && $4!="up" {print 1; exit}' <<< "${ML_RAW}")"
+	    ML_DISK="${ML_DISK:-0}" ;; esac
     case "$VAR" in all|ML_DISA)
         ML_DISA="$(awk '$4=="n/a" && substr($3,3,1)=="D" { print $2 }' <<< "${ML_RAW}")" ;; esac
     case "$VAR" in all|ML_PROV)
         ML_PROV="$(awk '! / up / && /provisioned/ {print $2}' <<< "${ML_RAW}" | xargs | tr ' ' ',')" ;; esac
     case "$VAR" in all|ML_DOWN)
-	ML_DOWN="$(awk '$3 ~ /X/ { print $2 }' <<< "${ML_RAW}")"
-	ML_DOWN_OPT="$(awk '$4=="down" && substr($3,4,1)=="O" { print $2 }' <<< "${ML_RAW}")" ;; esac
+	    ML_DOWN="$(awk '$3 ~ /X/ { print $2 }' <<< "${ML_RAW}")"
+	    ML_DOWN_OPT="$(awk '$4=="down" && substr($3,4,1)=="O" { print $2 }' <<< "${ML_RAW}")" ;; esac
     case "$VAR" in all|ML_SYNC)
-	ML_SYNC="$(awk '/sync#.*rsync/ && $4!="up" {print $2}' <<< "${ML_RAW}" | while read -r R; do grep -qw "${R}" <<< "${ML_DOWN_OPT}" || echo 1; done | grep -c 1)"
-	ML_SYNC="${ML_SYNC:-0}" ;; esac
+	    ML_SYNC="$(awk '/sync#.*rsync/ && $4!="up" {print $2}' <<< "${ML_RAW}" | while read -r R; do grep -qw "${R}" <<< "${ML_DOWN_OPT}" || echo 1; done | grep -c 1)"
+	    ML_SYNC="${ML_SYNC:-0}" ;; esac
     return 0
 }
 
@@ -240,67 +245,65 @@ check_ml_status()
                 rid)
                     [[ -n "$ML_DOWN" ]] || continue
                     update_status warn 
-
-		    RID_DOWN=""
+		            RID_DOWN=""
                     for RID_DOWN in $(echo "$ML_DOWN" | tr ' ' '\n' | grep -E "${RID_FILTER}")
                     do
-		        # Check if RID is optional
+		                # Check if RID is optional
                         grep -wq "${RID_DOWN}" <<< "$ML_DOWN_OPT" && OPT=1 || OPT=0
                         if (( OPT )); then
-			    # Set as Intentional DOWN RID.
+			                # Set as Intentional DOWN RID.
                             RID_OPT="${RID_OPT:+$RID_OPT }$RID_DOWN"
                         else
                             show RED "[Warning]\tResource ${RID_DOWN} is considered CRITICAL (optional = false or inexistent)."
                             show RED "\t\tIt will try to start it..."
-			    # Create list of RID to start
+			                # Create list of RID to start
                             RID_TO_START="${RID_TO_START:+$RID_TO_START }$RID_DOWN"
                         fi
                     done
                     if [[ -n ${RID_TO_START} ]]; then
-	               # Start critical RID		
-		       RID_DOWN=""
+	                # Start critical RID		
+		            RID_DOWN=""
                        for RID_DOWN in ${RID_TO_START}
                        do
                            phase "Fixing issue: Starting critical resource ${RID_DOWN}"
                            opensvc_start_rid "${RID_DOWN}"
                            case $? in
-			           0) update_status fix "The resource [${RID_DOWN}] have been started successfully." 
-				      FIX_RID="${FIX_RID:+$FIX_RID }$RID_DOWN"
-			              FIXED=1 ;;
-			           1) update_status skip "The resource [${RID_DOWN}] have been memorized remain DOWN and was skipped."
-				      SKIP_RID="${SKIP_RID:+$SKIP_RID }$RID_DOWN" ;;
-			           2) update_status nofix "The resource [${RID_DOWN}] didn't start successfully."
-	                              FAIL_RID="${FAIL_RID:+$FAIL_RID }$RID_DOWN" ;;
-	                   esac		       
-			   RC=10
+			                   0) update_status fix "The resource [${RID_DOWN}] have been started successfully." 
+				                    FIX_RID="${FIX_RID:+$FIX_RID }$RID_DOWN"
+			                        FIXED=1 ;;
+			                    1) update_status skip "The resource [${RID_DOWN}] have been memorized remain DOWN and was skipped."
+				                    SKIP_RID="${SKIP_RID:+$SKIP_RID }$RID_DOWN" ;;
+			                    2) update_status nofix "The resource [${RID_DOWN}] didn't start successfully."
+	                                FAIL_RID="${FAIL_RID:+$FAIL_RID }$RID_DOWN" ;;
+	                        esac		       
+			                RC=10
                        done
                     fi
                     echo "${RID_OPT}" >> "$DIR"/res_down
-		    refresh_ml_status                                                ||  RC=2
+		            refresh_ml_status  ||  RC=2
                     ;;
 
                 sync)
                     (( ML_SYNC ))  || continue
                     update_status warn "Cluster must be in sync."
                     phase "Fix: Sync configurations between nodes"
-                    run_command -l "om ${SERVICE} sync all --wait"             || RC=3
-		    refresh_ml_status                                                ||  RC=2
-		    if (( ML_SYNC )); then
+                    run_command -l "om ${SERVICE} sync all --wait"  || RC=3
+		            refresh_ml_status  ||  RC=2
+		            if (( ML_SYNC )); then
                         update_status nofix
                         (( FAIL_SYNC++ ))
                     else
                         update_status fix
                         FIXED=1
                     fi
-
                     ;;
 
                 prstart)
-		    (( ML_DISK )) || continue
+		            (( ML_DISK )) || continue
                     update_status warn "SCSI reservation must be applied."
                     phase "Fixing issue: Applying SCSI reservation (prstart)"
                     run_command -l "om ${SERVICE} prstart --node=${NODE} --wait"  || RC=4
-		    refresh_ml_status                                                ||  RC=2
+		            refresh_ml_status  ||  RC=2
                     if (( ML_DISK )); then
                         update_status nofix
                         (( FAIL_DISK++ ))
@@ -311,11 +314,11 @@ check_ml_status()
                     ;;
 
                 provisioned)
-                    [[ -n  "${ML_PROV}" ]]                                           || continue
+                    [[ -n  "${ML_PROV}" ]]  || continue
                     update_status warn "Some resources must be set as provisioned."
                     phase "Fixing issue: Setting provisioned state"
                     run_command -l "om ${SERVICE} set provisioned --node ${ML_PROV} --wait" || RC=5
-		    refresh_ml_status                                                ||  RC=2
+		            refresh_ml_status  ||  RC=2
                     if [[ "${ML_PROV}" == "true" ]]; then
                         update_status nofix 
                         (( FAIL_PROV++ ))
@@ -328,11 +331,11 @@ check_ml_status()
         done
 
         if (( FIXED > 0 )); then
-	   show GREEN ""
-	   sleep 1
-           phase "Status of ${SERVICE} on primary (${NODE})"
-           run_command -l "om ${SERVICE} print status -r --node=${NODE}" || RC=1
-           refresh_ml_status || RC=2
+	        show GREEN ""
+	        sleep 1
+            phase "Status of ${SERVICE} on primary (${NODE})"
+            run_command -l "om ${SERVICE} print status -r --node=${NODE}" || RC=1
+            refresh_ml_status || RC=2
         fi
     fi	
 
@@ -347,13 +350,13 @@ check_ml_status()
     fi
     if (( RC == 0 || RC == 10 )) && [[ "${NODE}" == "${PRIMARY}" ]]; then
         if [[ -n "${ML_WARN}" ]]; then
-	    show YELLOW "[Warning]\tThere are resources in WARN state: $(echo "${ML_WARN}"|xargs)"
-	    RC=16
-	fi    
+	        show YELLOW "[Warning]\tThere are resources in WARN state: $(echo "${ML_WARN}"|xargs)"
+	        RC=16
+	    fi    
         if [[ -n "${ML_DOWN}" ]]; then
             show YELLOW "[Warning]\tThere are resources in DOWN state: $(echo "${ML_DOWN}"|xargs)"
-	    RC=17
-	fi    
+	        RC=17
+	    fi    
     fi	
 
     RID_DOWN=""
@@ -363,13 +366,12 @@ check_ml_status()
         show YELLOW "\t\tYou can start it manually with command: om ${SERVICE} start --rid ${RID_DOWN} --node ${PRIMARY}"
     done	
 
-    (( FAIL_SYNC ))       && { show RED    "[Failure]\tThe data synchronization issue persists after fix.";                   RC=12; }
-    (( FAIL_DISK ))       && { show RED    "[Failure]\tThe SCSI reservation issue persists after fix.";                       RC=13; }
-    (( FAIL_PROV ))       && { show RED    "[Failure]\tThe provisioning state issue persists after fix.";                     RC=14; }
-    [[ -n "${FIX_RID}"      ]]    &&   show GREEN  "[Success]\tThe resource(s) [${FIX_RID}] have been started successfully." 
-    [[ -n "${SKIP_RID}"     ]]    &&   show YELLOW "[Skipped]\tThe resource(s) [${SKIP_RID}] have been memorized remain DOWN and was skipped."
-    [[ -n "${FAIL_RID}"     ]]    && { show RED    "[Failure]\tThe resource(s) [${FAIL_RID}] didn't start successfully.";     RC=15; }
+    (( FAIL_SYNC ))         && { show RED    "[Failure]\tThe data synchronization issue persists after fix.";                   RC=12; }
+    (( FAIL_DISK ))         && { show RED    "[Failure]\tThe SCSI reservation issue persists after fix.";                       RC=13; }
+    (( FAIL_PROV ))         && { show RED    "[Failure]\tThe provisioning state issue persists after fix.";                     RC=14; }
+    [[ -n "${FIX_RID}"   ]] &&   show GREEN  "[Success]\tThe resource(s) [${FIX_RID}] have been started successfully." 
+    [[ -n "${SKIP_RID}"  ]] &&   show YELLOW "[Skipped]\tThe resource(s) [${SKIP_RID}] have been memorized remain DOWN and was skipped."
+    [[ -n "${FAIL_RID}"  ]] && { show RED    "[Failure]\tThe resource(s) [${FAIL_RID}] didn't start successfully.";     RC=15; }
 
     return $RC
 }
-

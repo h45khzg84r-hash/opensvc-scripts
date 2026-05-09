@@ -1,6 +1,8 @@
 #!/bin/bash
 # lib_common.sh - Generic shell utilities: output, logging, execution
 # Source this file; do not execute it directly.
+# Author.: adriano.costa
+# Version: 20260508
 
 [[ "${BASH_SOURCE[0]}" == "$0" ]] && { echo "This file must be sourced, not executed."; exit 1; }
 
@@ -17,7 +19,9 @@
 #  write_log()         Strip ANSI, assemble and write the final log file
 #  remote()            Execute a command on NODE via SSH or locally
 #  run_command()       Execute, display and log a command with RC capture
-#  prompt_continue()   Interactive yes/no prompt with status update
+#  prompt_continue()   Prompt to confirm information (yes/no) with status update
+#  select_bool()       Prompt to select a boolean value (true/false).
+#  select_numeric()    Prompt to select a numeric value. 0 disables it.
 #
 #######################################################################
 
@@ -85,8 +89,7 @@ stage()
 {
     local SEP
     SEP="$(printf '%*s' 60 '' | tr ' ' '-')"
-    [[ -n "$1" ]] && echo -e "${SEP}\n$1\n${SEP}" >> "${PHASE_LOG}" \
-                  || echo -e "${SEP}"               >> "${PHASE_LOG}"
+    [[ -n "$1" ]] && echo -e "${SEP}\n$1\n${SEP}" >> "${PHASE_LOG}" || echo -e "${SEP}"               >> "${PHASE_LOG}"
 }
 
 # -------------------
@@ -115,24 +118,23 @@ update_status()
         warn)    COLOR="${YELLOW}" PREFIX="[Warning]" ;;
         skip)    COLOR="${YELLOW}" PREFIX="[Skipped]" ;;
         err)     COLOR="${RED}"    PREFIX="[ Error ]" ;;
-        nok)     COLOR="${RED}"    PREFIX="[ Error ]" ;;
         no_go)   COLOR="${RED}"    PREFIX="[Aborted]" ;;
         running) COLOR="${BLUE}"   PREFIX="[Running]" ;;
         prompt)  COLOR="${YELLOW}" PREFIX="[Prompt ]" ;;
     esac
     [[ -n "${MESSAGE}" ]] && echo -e "\n${COLOR}${PREFIX}\t${MESSAGE}${RESET}" | tee -a "${TEMP_LOG}"
-    sed -i "\$s|^[^]]*]|${PREFIX}|" "${PHASE_LOG}"
+    tac "${PHASE_LOG}" | sed "0,/^[^]]*]/s/^[^]]*]/${PREFIX}/" | tac > "${PHASE_LOG}.tmp" && mv "${PHASE_LOG}.tmp" "${PHASE_LOG}"
     sleep 1
     case "${PHASE_STATUS}" in
         err)   stage "Activity finished with ERROR in $(date +'%d/%m/%Y %H:%M')"
-	       show BLUE "\n\t\tLog: ${FINAL_LOG}"
-	       create_log
-	       exit 1
+               show BLUE "\n\t\tLog: ${FINAL_LOG}"
+               create_log
+               exit 1
                ;;
         no_go) stage "Activity EXITED by user in $(date +'%d/%m/%Y %H:%M')"
-	       show BLUE "\n\t\tLog: ${FINAL_LOG}"
-	       create_log
-	       exit 1
+               show BLUE "\n\t\tLog: ${FINAL_LOG}"
+               create_log
+               exit 1
                ;;
     esac
 }
@@ -155,18 +157,17 @@ multipath_status()
 #   4  = issues detected, operator chose to abort
 # -------------------
 {
-    local LOG MPATH_OUTPUT ISSUE
-    [[ -f "${DIR}/multipath-ll.before" ]] && LOG="${DIR}/multipath-ll.after" \
-                                          || LOG="${DIR}/multipath-ll.before"
+    local LOG OUTPUT ISSUE
+    [[ -f "${DIR}/multipath-ll.before" ]] && LOG="${DIR}/multipath-ll.after" || LOG="${DIR}/multipath-ll.before"
     if [[ "${HOST}" != "${NODE}" ]]; then
         echo -e "[root@${HOST}]:~ # ssh root@${NODE} multipath -ll" | tee -a "${TEMP_LOG}"
     else
         echo -e "[root@${HOST}]:~ # multipath -ll" | tee -a "${TEMP_LOG}"
     fi
-    MPATH_OUTPUT=$(remote "multipath -ll") || return 1
-    [[ -z "${MPATH_OUTPUT}" ]] && return 2
-    echo "${MPATH_OUTPUT}" | tee -a "${TEMP_LOG}"
-    echo "${MPATH_OUTPUT}" > "${LOG}"
+    OUTPUT=$(remote "multipath -ll") || return 1
+    [[ -z "${OUTPUT}" ]] && return 2
+    echo "${OUTPUT}" | tee -a "${TEMP_LOG}"
+    echo "${OUTPUT}" > "${LOG}"
 
     ISSUE="$(grep -E "failed|faulty|offline|shaky|removed|down" "${LOG}")"
     if [[ -n "$ISSUE" ]]; then
@@ -243,10 +244,6 @@ write_log()
     rm -rf "${DIR}" 2>/dev/null
 }
 
-#######################################################################
-# Execution Helpers
-#######################################################################
-
 # -------------------
 remote()
 # -------------------
@@ -254,7 +251,7 @@ remote()
 #              remote CMD        - runs on NODE (global)
 #              remote TARGET CMD - runs on explicit TARGET
 #              Suppresses stderr. For logged output use run_command.
-#              runs locally otherwise. 
+#              runs locally otherwise.
 #              Used for data collection (not for logged commands - use run_command).
 #
 #   $1  = [TARGET] - optional node hostname (default: NODE global)
@@ -309,11 +306,11 @@ run_command()
     if [[ "${HOST}" != "${NODE}" && "${LOCALITY}" != "local" ]]; then
         DISPLAY_CMD="ssh root@${NODE} ${CMD}"
         echo -e "[root@${HOST}]:~ # ${DISPLAY_CMD}" | tee -a "${TEMP_LOG}"
-	OUTPUT=$(printf '%s\n' "${CMD}" | ssh -o LogLevel=ERROR root@"${NODE}" bash 2>&1 | tee -a "${TEMP_LOG}")
+        printf '%s\n' "${CMD}" | ssh -o LogLevel=ERROR root@"${NODE}" bash 2>&1 | tee -a "${TEMP_LOG}"
         RC=${PIPESTATUS[1]}
     else
         echo -e "[root@${HOST}]:~ # ${DISPLAY_CMD}" | tee -a "${TEMP_LOG}"
-	OUTPUT=$(bash -c "${CMD}" 2>&1 | tee -a "${TEMP_LOG}")
+        bash -c "${CMD}" 2>&1 | tee -a "${TEMP_LOG}"
         RC=${PIPESTATUS[0]}
     fi
     echo -e "[root@${HOST}]:~ #\n" | tee -a "${TEMP_LOG}"
@@ -347,9 +344,60 @@ prompt_continue()
 
     [[ "$ANSWER" =~ ^[Yy]$ ]] && YORN="<  Yes  >"
 
-    sed -i "\$s|<[^>]*>|${YORN}|" "${PHASE_LOG}"
+    tac "${PHASE_LOG}" | sed "0,/<[^>]*>/s/<[^>]*>/${YORN}/" | tac > "${PHASE_LOG}.tmp" && mv "${PHASE_LOG}.tmp" "${PHASE_LOG}"
     PROMPT=$(printf "%s" "$PROMPT" | sed $'s/\t//g; s/://g')
     echo -e "\t\t${PROMPT} ${YORN}" >> "${TEMP_LOG}"
 
     [[ "$ANSWER" =~ ^[Yy]$ ]] && return 0 || return 1
+}
+
+# -------------------
+select_bool()
+# -------------------
+# Description: Prompt operator to select a boolean value (true/false).
+#              Pressing Enter accepts the default value.
+#
+#   $1  = PARAM   - parameter name (for display)
+#   $2  = DEFAULT - default value: true | false (default: true)
+#
+# Globals used: (none)
+#
+# RC: (none - always succeeds)
+# Prints: "true" or "false"
+# -------------------
+{
+    local PARAM="$1" DEFAULT="${2:-true}" OPT
+
+    while true; do
+        read -rp $'\t\t'"${PARAM} [1=true / 2=false / Enter=${DEFAULT}]: " OPT
+        case "${OPT}" in
+            1)  echo "true";        return 0 ;;
+            2)  echo "false";       return 0 ;;
+            "") echo "${DEFAULT}";  return 0 ;;
+            *)  show YELLOW "\t\tInvalid option. Press 1, 2 or Enter." ;;
+        esac
+    done
+}
+
+# -------------------
+select_numeric()
+# -------------------
+# Description: Prompt operator for a numeric value. 0 disables the parameter.
+#
+#   $1  = PARAM   - parameter name (for display)
+#   $2  = DEFAULT - default value
+#
+# RC: 0  - always succeeds
+# Prints: the selected value, or empty string if 0 (disabled)
+# -------------------
+{
+    local PARAM="$1" DEFAULT="${2:-0}" VAL
+
+    while true; do
+        read -rp $'\t\t'"${PARAM} [0=disable, Enter=${DEFAULT}]: " VAL
+        [[ -z "$VAL" ]] && VAL="${DEFAULT}"
+        [[ "$VAL" =~ ^[0-9]+$ ]] && break
+        show YELLOW "\t\tInvalid value. Enter a positive integer or 0 to disable."
+    done
+    (( VAL == 0 )) && echo "" || echo "${VAL}"
 }

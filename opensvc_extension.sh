@@ -1,15 +1,11 @@
 #!/bin/bash
 # opensvc_extension.sh - Extends a filesystem in an OpenSVC HA cluster
 # Usage: opensvc_extension.sh <FS> <SIZE_GB>
-# Author.: YOUR_NAME
+# Author.: adriano.costa
 # Version: 20260419
 
 FS=$1
 SIZE=$2
-
-#######################################################################
-# General Functions
-#######################################################################
 
 # -------------------
 usage()
@@ -30,19 +26,24 @@ usage()
     exit 1
 }
 
-
 # -------------------
-create_log()
+report_block()
 # -------------------
 {
-    local IP_PRI HEADER
-    IP_PRI="$(getent ahostsv4 "${PRIMARY}" | head -1 | awk '{print $1}')"
-    HEADER="Activity...: Extension of filesystem in an OpenSVC HA cluster
- Filesystem: ${FS}
- From size.: ${OLD_LV_SIZE_G}G
- To size...: ${SIZE_G}G
- Service ${SERVICE} is UP in ${PRIMARY} (${IP_PRI})"
-    write_log "${HEADER}"
+    cat <<EOF
+
+Extension of filesystem in an OpenSVC Cluster:
+  Service Name ......: ${SERVICE}"
+  Primary Node.......: ${PRIMARY} (${IP_PRI})"
+  Standby Node.......: ${STANDBY} (${IP_STA})"
+
+LVM service structure:
+  Resource ID........: ${RID}
+  Filesystem.........: ${FS}
+  OLD size...........: ${OLD_LV_SIZE_G}G
+  NEW size...........: ${SIZE_G}G
+
+EOF
 }
 
 # -------------------
@@ -90,16 +91,18 @@ init_vars()
 #######################################################################
 # MAIN
 #######################################################################
-LIBCOMMON="./lib_common.sh"
-[[ -f "${LIBCOMMON}" ]] || { echo "Library not found: ${LIBCOMMON}"; exit 1; }
-source "${LIBCOMMON}"
-LIBOPENSVC="./lib_opensvc.sh"
-[[ -f "${LIBOPENSVC}" ]] || { echo "Library not found: ${LIBOPENSVC}"; exit 1; }
-source "${LIBOPENSVC}"
-LIBLVM="./lib_lvm.sh"
-[[ -f "${LIBLVM}" ]] || { echo "Library not found: ${LIBLVM}"; exit 1; }
-source "${LIBLVM}"
-[[ "$1" == "-h" || "$1" == "--help" ]] && usage
+# Load LIBS
+MY_LIBS="./lib_common.sh ./lib_lvm.sh ./lib_opensvc.sh"
+for MY_LIB in $MY_LIBS; do
+    if [[ -f "$MY_LIB" ]]; then
+        source "$MY_LIB"
+    else
+        echo "ERROR: Library not found: $MY_LIB"
+        exit 1
+    fi
+done
+
+[[ "$1" == "-h" || "$1" == "--help" || "$1" == "-?" ]] && usage
 [[ $# -lt 2 ]] && usage "Missing arguments. Expected 2, got $#."
 [[ "$2" =~ ^[0-9]+([.][0-9]+)?$ ]] || usage "SIZE_GB must be a positive number (got: $2)."
 NEED_LUN=0
@@ -115,7 +118,10 @@ stage "Activity started in $(date +'%d/%m/%Y %H:%M')"
 phase "Collecting environment status"
 init_vars; RC=$?
 case $RC in
-    0)   update_status ok  "Environment collected. SERVICE=${SERVICE}, RID=${RID}, PRIMARY=${PRIMARY}, STANDBY=${STANDBY}.";;
+    0)  while IFS= read -r LINE; do
+            show GREEN "\t\t${LINE}"
+        done < <(build_report_block)
+        update_status ok "All the information was collected" ;;
     1)   update_status err "Variable FS is empty." ;;
     2)   update_status err "Cannot identify SERVICE for ${FS}. Is it in an OpenSVC cluster?" ;;
     3)   update_status err "Cannot determine RID for ${FS}." ;;
@@ -135,7 +141,6 @@ SIZE_B=$(bc -l <<< "scale=2; ${SIZE} * 1024^3")
 ########################################
 stage "PRE-CHECK"
 ########################################
-
 phase "Checking status of ${SERVICE}"
 check_ml_status sync prstart provisioned rid; RC=$?
 case $RC in
@@ -174,11 +179,10 @@ esac
 ########################################
 stage "On PRIMARY node (${PRIMARY})"
 ########################################
-
 phase "Extending lvol ${LV_NAME}"
 make_lv_extension; RC=$?
 case $RC in
-    0) update_status ok    "lvol ${LV_NAME} extended (${LV_SIZE_G}G to ${SIZE}G)."; create_log
+    0) update_status ok    "lvol ${LV_NAME} extended (${LV_SIZE_G}G to ${SIZE}G)."; write_log "$(report_block)"
        show BLUE "\n\t\tLog: ${FINAL_LOG}"; exit 0 ;;
     3) update_status skip  "Continuing..." ;;
     4) update_status no_go "Exiting..." ;;
@@ -267,7 +271,6 @@ show GREEN ""
 NODE=${STANDBY}
 stage "On STANDBY node (${STANDBY})"
 ########################################
-
 phase "Checking LVM state on standby node"
 get_pvs_status || update_status err "Unexpected error during pvs command (RC=${RC})."
 get_vgs_status || update_status err "Unexpected error during vgs command (RC=${RC})."
@@ -304,7 +307,6 @@ esac
 NODE=${PRIMARY}
 stage "On PRIMARY node (${PRIMARY})"
 ########################################
-
 phase "Extending VG ${VG_NAME}"
 make_vg_extension; RC=$?
 case $RC in
@@ -336,7 +338,6 @@ esac
 ########################################
 stage "POST-CHECK"
 ########################################
-
 phase "Checking status of ${SERVICE}"
 check_ml_status sync prstart provisioned rid; RC=$?
 case $RC in
@@ -365,5 +366,5 @@ show BLUE ""
 show BLUE "[Success]\tThe filesystem ${FS} has been successfully extended from ${OLD_LV_SIZE_G}G to ${SIZE_G}G."
 show BLUE "\t\tAll data has been preserved."
 show BLUE "\n\t\tLog: ${FINAL_LOG}"
-create_log
+write_log "$(report_block)"
 exit 0

@@ -2,16 +2,10 @@
 # opensvc_remove_fs.sh - Remove a filesystem resource from an OpenSVC HA service
 # The LV and its filesystem data are preserved; only the resource definition is removed.
 # Usage: opensvc_remove_fs.sh <FS>
-# Author.:
-# Version: 20260501
+# Author.: adriano.costa
+# Version: 20260508
 
 FS=$1
-
-
-
-#######################################################################
-# General Functions
-#######################################################################
 
 # -------------------
 usage()
@@ -37,25 +31,29 @@ usage()
 }
 
 # -------------------
-create_log()
+report_block()
 # -------------------
 {
-    local HEADER
-    HEADER="Activity...: Remove filesystem resource from OpenSVC service
- Service...: ${SERVICE}
- Resource..: ${RID}
- Mount.....: ${FS}
- Device....: ${FS_DEV:-N/A}
- Primary...: ${PRIMARY} (${IP_PRI}) 
- Standby...: ${STANDBY} (${IP_STA})"
-    write_log "${HEADER}"
+    cat <<EOF
+
+Remove filesystem resource from OpenSVC service:
+  Service Name.......: ${SERVICE}
+  Primary Node.......: ${PRIMARY} (${IP_PRI})
+  Standby Node.......: ${STANDBY} (${IP_STA})
+
+RID (Filesystem) to remove:
+  Resource ID........: ${RID}
+  Filesystem Name....: ${FS}
+  Logical Volume.....: ${FS_DEV}
+
+EOF
 }
 
 # -------------------
 init_vars()
 # -------------------
 {
-    local COUNT SVC_STATUS
+    local COUNT
 
     HOST=$(hostname)
     [[ -z "$FS" ]] && return 1
@@ -77,7 +75,6 @@ init_vars()
 
     grep -Fxq "${SERVICE}" <<< "${SERVICES}" || return 9
 
-    SVC_STATUS="$(om "${SERVICE}" print status --node "${NODES_CSV}" 2>/dev/null)"
     resolve_svc_nodes; RC=$?
     (( RC == 1 )) && return 10
     (( RC == 2 )) && return 11
@@ -90,32 +87,24 @@ init_vars()
     FS_DEV="$(remote "om ${SERVICE} get --kw ${RID}.dev 2>/dev/null")"
     [[ -z "$FS_DEV" || "$FS_DEV" == "None" ]] && return 6
 
-    IP_PRI="$(getent ahostsv4 "${PRIMARY}" | head -1 | awk '{print $1}')"
-    IP_STA="$(getent ahostsv4 "${STANDBY}" | head -1 | awk '{print $1}')"
-
     return 0
 }
 
 #######################################################################
 # MAIN
 #######################################################################
-LIBCOMMON="./lib_common.sh"
-if [[ -f "${LIBCOMMON}" ]];then
-    source "${LIBCOMMON}"
-else
-    echo "Library not found: ${LIBCOMMON}"
-    exit 1
-fi
+# Load LIBS
+MY_LIBS="./lib_common.sh ./lib_opensvc.sh"
+for MY_LIB in $MY_LIBS; do
+    if [[ -f "$MY_LIB" ]]; then
+        source "$MY_LIB"
+    else
+        echo "ERROR: Library not found: $MY_LIB"
+        exit 1
+    fi
+done
 
-LIBOPENSVC="./lib_opensvc.sh"
-if [[ -f "${LIBOPENSVC}" ]];then
-    source "${LIBOPENSVC}"
-else
-    echo "Library not found: ${LIBOPENSVC}"
-    exit 1
-fi
-
-[[ "$1" == "-h" || "$1" == "--help" ]] && usage
+[[ "$1" == "-h" || "$1" == "--help" || "$1" == "-?" ]] && usage
 [[ $# -lt 1 ]] && usage "Missing argument. FS (mount point) is required."
 
 init_logs
@@ -128,14 +117,10 @@ stage "Activity started in $(date +'%d/%m/%Y %H:%M')"
 phase "Collecting Information"
 init_vars; RC=$?
 case $RC in
-    0)  update_status ok  "Collection information to remove filesystem:\n"
-        show GREEN   "\t\tService............: ${SERVICE}"
-        show GREEN   "\t\tFilesystem.........: ${FS}"
-        show GREEN   "\t\tLogical Volume.....: ${FS_DEV}"
-        show GREEN   "\t\tResource ID........: ${RID}"
-        show GREEN   "\t\tPrimary Node.......: ${PRIMARY} (${IP_PRI})"
-        show GREEN   "\t\tStandby Node.......: ${STANDBY} (${IP_STA})"
-        show GREEN "" ;;
+    0)  while IFS= read -r LINE; do
+            show GREEN "\t\t${LINE}"
+        done < <(build_report_block)
+        update_status ok "All the information was collected" ;;
     1)  update_status err "Variable FS is empty." ;;
     2)  update_status err "This script is not support multiple services with mnt=${FS}." ;;
     3)  update_status err "Cannot identify SERVICE for ${FS}. Is it in an OpenSVC cluster?" ;;
@@ -150,7 +135,7 @@ case $RC in
     *)  update_status err "Unexpected error in init_vars (RC=${RC})." ;;
 esac
 
-show YELLOW  "[ Warning ]\tTHIS ACTION IS REVERSIBLE."
+show YELLOW  "\n[ Warning ]\tTHIS ACTION IS REVERSIBLE."
 show YELLOW  "\t\tYou will need to create the resource again in the cluster."
 prompt_continue "Does it start the filesystem remotion?" || update_status no_go "Aborted. No action was taken."
 show GREEN ""
@@ -301,5 +286,5 @@ show BLUE "[Success]\tResource ${RID} has been removed in the ${SERVICE}."
 (( REMOVE == 0)) && show BLUE "\t\tTHE ACTION IS IRREVERSIBLE. All data has been permanently destroyed."
 (( REMOVE == 1)) && show BLUE "\t\tThe Filesystem ${FS} was unmounted but the device ${FS_DEV} and its data are intact."
 show BLUE "\n\t\tLog: ${FINAL_LOG}"
-create_log
+write_log "$(report_block)"
 exit 0

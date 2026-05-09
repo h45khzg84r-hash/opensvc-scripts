@@ -1,7 +1,7 @@
 #!/bin/bash
 # opensvc_remove_app.sh - Removes an app resource from an OpenSVC HA service
 # Usage: opensvc_remove_app.sh <SERVICE> <APP_PATH>
-# Author.:
+# Author.: adriano.costa
 # Version: 20260419
 #
 # The script file path is automatically loaded from the RID.
@@ -9,10 +9,6 @@
 
 SERVICE=$1
 RID=$2
-
-#######################################################################
-# General Functions
-#######################################################################
 
 # -------------------
 usage()
@@ -38,17 +34,21 @@ usage()
 }
 
 # -------------------
-create_log()
+report_block()
 # -------------------
 {
-    local IP_PRI HEADER
-    IP_PRI="$(getent ahostsv4 "${PRIMARY}" | head -1 | awk '{print $1}')"
-    HEADER="Activity...: Remove app resource from OpenSVC service
- Service...: ${SERVICE}
- Resource..: ${RID}
- Script....: ${APP_PATH}
- Primary...: ${PRIMARY} (${IP_PRI})"
-    write_log "${HEADER}"
+    cat <<EOF
+
+Remove Application resource from OpenSVC service:
+  Service Name.......: ${SERVICE}
+  Primary Node.......: ${PRIMARY} (${IP_PRI})
+  Standby Node.......: ${STANDBY} (${IP_STA})
+
+RID (Application) to remove:
+  Application path...: ${APP_PATH}
+  Resource ID........: ${RID}
+
+EOF
 }
 
 # -------------------
@@ -56,8 +56,8 @@ init_vars()
 # -------------------
 {
     HOST=$(hostname)
-    [[ -z "$SERVICE" ]]  && return 1
-    [[ -z "$RID" ]] && return 2
+    [[ -z "$SERVICE" ]]   && return 1
+    [[ -z "$RID" ]]       && return 2
     [[ "$RID" =~ ^app# ]] || return 7
 
     # Collect cluster nodes
@@ -75,13 +75,9 @@ init_vars()
     [[ -z "$APP_PATH" ]] && return 6
 
     # Resolve PRIMARY / STANDBY
-    SVC_STATUS="$(om "${SERVICE}" print status --node "${NODES_CSV}" 2>/dev/null)"
     resolve_svc_nodes; RC=$?
     (( RC == 1 )) && return 8
     (( RC == 2 )) && return 9
-
-    IP_PRI="$(getent ahostsv4 "${PRIMARY}" | head -1 | awk '{print $1}')"
-    IP_STA="$(getent ahostsv4 "${STANDBY}" | head -1 | awk '{print $1}')"
 
     return 0
 }
@@ -90,22 +86,18 @@ init_vars()
 #######################################################################
 # MAIN
 #######################################################################
+# Load LIBS
+MY_LIBS="./lib_common.sh ./lib_opensvc.sh"
+for MY_LIB in $MY_LIBS; do
+    if [[ -f "$MY_LIB" ]]; then
+        source "$MY_LIB"
+    else
+        echo "ERROR: Library not found: $MY_LIB"
+        exit 1
+    fi
+done
 
-LIBCOMMON="./lib_common.sh"
-if [[ ! -f "${LIBCOMMON}" ]]; then
-    echo "Library not found: ${LIBCOMMON}"
-    exit 1
-fi
-source "${LIBCOMMON}"
-
-LIBOPENSVC="./lib_opensvc.sh"
-if [[ ! -f "${LIBOPENSVC}" ]]; then
-    echo "Library not found: ${LIBOPENSVC}"
-    exit 1
-fi
-source "${LIBOPENSVC}"
-
-[[ "$1" == "-h" || "$1" == "--help" ]] && usage
+[[ "$1" == "-h" || "$1" == "--help" || "$1" == "-?" ]] && usage
 [[ $# -lt 2 ]] && usage "Missing arguments. Expected 2, got $#."
 
 init_logs
@@ -115,16 +107,13 @@ clear
 ########################################
 stage "Activity started in $(date +'%d/%m/%Y %H:%M')"
 ########################################
-phase "Collecting environment status"
+phase "Collecting Information"
 init_vars; RC=$?
 case $RC in
-    0)  update_status ok  "Information collected:\n"
-        show GREEN "\t\tService...............: ${SERVICE}"
-        show GREEN "\t\tApplication path......: ${APP_PATH}"
-        show GREEN "\t\tResource ID...........: ${RID}"
-        show GREEN "\t\tPrimary Node..........: ${PRIMARY} (${IP_PRI})"
-        show GREEN "\t\tStandby Node..........: ${STANDBY} (${IP_STA})"
-        show GREEN "" ;;
+    0)  while IFS= read -r LINE; do
+            show GREEN "\t\t${LINE}"
+        done < <(build_report_block)
+        update_status ok "All the information was collected" ;;
     1)  update_status err "Variable SERVICE is empty." ;;
     2)  update_status err "Variable APP_PATH is empty." ;;
     3)  update_status err "Cannot list cluster nodes." ;;
@@ -136,7 +125,6 @@ case $RC in
     9)  update_status err "STANDBY node is empty - is it down?" ;;
     *)  update_status err "Unexpected error in init_vars (RC=${RC})." ;;
 esac
-
 
 show YELLOW  "[ Warning ]\tTHIS ACTION IS REVERSIBLE."
 show YELLOW  "\t\tYou will need to create the resource again in the cluster."
@@ -253,5 +241,5 @@ show BLUE ""
 show BLUE "[Success]\tResource ${RID} removed from ${SERVICE}."
 show BLUE "\t\tScript ${APP_PATH} is intact on disk."
 show BLUE "\n\t\tLog: ${FINAL_LOG}"
-create_log
+write_log "$(report_block)"
 exit 0

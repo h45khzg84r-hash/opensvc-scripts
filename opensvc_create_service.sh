@@ -1,7 +1,7 @@
 #!/bin/bash
 # opensvc_create_service.sh - Create a new OpenSVC HA service
 # Usage: opensvc_create_svc.sh <SERVICE> <INTERFACE> <IP>
-# Author.:
+# Author.: adriano.costa
 # Version: 20260419
 #
 # Creates a new service with ip#1, disk#1 (VG=SERVICE), disk#1pr,
@@ -10,10 +10,6 @@
 SERVICE=$1
 IFACE=$2
 IP=$3
-
-#######################################################################
-# General Functions
-#######################################################################
 
 # -------------------
 usage()
@@ -41,22 +37,24 @@ usage()
 }
 
 # -------------------
-create_log()
+report_block()
 # -------------------
 {
-    local IP_PRI HEADER
-    IP_PRI="$(getent ahostsv4 "${PRIMARY}" | head -1 | awk '{print $1}')"
-    HEADER="Activity...: Create new OpenSVC HA service
- Service...: ${SERVICE}
- Interface.: ${IFACE}
- IP........: ${IP}
- Netmask...: ${NETMASK}
- Gateway...: ${GATEWAY}
- VG........: ${SERVICE}
- Sync path.: /local/p0/${SERVICE}
- Monitor...: ${MONITOR_ACTION}
- Primary...: ${PRIMARY} (${IP_PRI})"
-    write_log "${HEADER}"
+    cat <<EOF
+
+Add a new OpenSVC service:
+  Service Name.......: ${SERVICE}
+  Primary Node.......: ${PRIMARY} (${IP_PRI})
+  Standby Node.......: ${STANDBY} (${IP_STA})
+  Interface..........: ${IFACE}
+  IP.................: ${IP}
+  Netmask............: ${NETMASK}
+  Gateway............: ${GATEWAY}
+  VG.................: ${SERVICE}
+  Sync path..........: /local/p0/${SERVICE}
+  Monitor............: ${MONITOR_ACTION}
+
+EOF
 }
 
 # -------------------
@@ -112,25 +110,30 @@ init_vars()
     NODE="${HOST}"
     STANDBY="$(awk -v h="${HOST}" '$0!=h {print; exit}' <<< "${NODES}")"
 
+    IP_PRI="$(getent ahostsv4 "${PRIMARY}" | head -1 | awk '{print $1}')"
+    IP_STA="$(getent ahostsv4 "${STANDBY}" | head -1 | awk '{print $1}')"
+
     # Check VG exists on primary
     vgs "${SERVICE}" &>/dev/null || return 10
 
     return 0
 }
 
-
 #######################################################################
 # MAIN
 #######################################################################
+# Load LIBS
+MY_LIBS="./lib_common.sh ./lib_opensvc.sh"
+for MY_LIB in $MY_LIBS; do
+    if [[ -f "$MY_LIB" ]]; then
+        source "$MY_LIB"
+    else
+        echo "ERROR: Library not found: $MY_LIB"
+        exit 1
+    fi
+done
 
-LIBCOMMON="./lib_common.sh"
-[[ -f "${LIBCOMMON}" ]] || { echo "Library not found: ${LIBCOMMON}"; exit 1; }
-source "${LIBCOMMON}"
-LIBOPENSVC="./lib_opensvc.sh"
-[[ -f "${LIBOPENSVC}" ]] || { echo "Library not found: ${LIBOPENSVC}"; exit 1; }
-source "${LIBOPENSVC}"
-
-[[ "$1" == "-h" || "$1" == "--help" ]] && usage
+[[ "$1" == "-h" || "$1" == "--help" || "$1" == "-?" ]] && usage
 [[ $# -lt 3 ]] && usage "Missing arguments. Expected 3, got $#."
 
 init_logs
@@ -143,7 +146,7 @@ stage "Activity started in $(date +'%d/%m/%Y %H:%M')"
 phase "Collecting environment status"
 init_vars; RC=$?
 case $RC in
-    0)  update_status ok "Environment collected. SERVICE=${SERVICE}, IP=${IP}, PRIMARY=${PRIMARY}." ;;
+    0)  ;;
     1)  update_status err "Variable SERVICE is empty." ;;
     11) update_status err "SERVICE looks like a path (starts with /). Check arguments." ;;
     2)  update_status err "Variable INTERFACE is empty." ;;
@@ -158,20 +161,19 @@ case $RC in
     *)  update_status err "Unexpected error in init_vars (RC=${RC})." ;;
 esac
 
+show GREEN ""
+while IFS= read -r LINE; do
+    show GREEN "\t\t${LINE}"
+done < <(build_report_block)
+
 # Warn if IP is already responding
 if [[ "${IP_ACTIVE}" == "true" ]]; then
     show YELLOW "\t\t[Warning] IP ${IP_ADDR} is already responding to ping."
     prompt_continue "IP is active. Continue anyway?" || update_status no_go "Aborted by operator."
-fi
-
-show BLUE "\t\tService   : ${SERVICE}"
-show BLUE "\t\tInterface : ${IFACE}"
-show BLUE "\t\tIP        : ${IP_ADDR} / ${NETMASK}"
-show BLUE "\t\tHostname  : ${IP_HOSTNAME}"
-show BLUE "\t\tGateway   : ${GATEWAY}"
-show BLUE "\t\tVG        : ${SERVICE}"
-show BLUE "\t\tSync path : /local/p0/${SERVICE}"
-show GREEN ""
+else
+    prompt_continue || update_status no_go "Aborting - check all information before continuing."
+fi    
+update_status ok 
 
 # Interactive: ask monitor action
 show BLUE "\t\tMonitor action options: freezestop | reboot | switch | crash"
@@ -303,5 +305,5 @@ show BLUE ""
 show BLUE "[Success]\tThe new service ${SERVICE} was created successfully."
 show BLUE "\t\tThis service is using IP ${IP} and VG ${SERVICE}."
 show BLUE "\n\t\tLog: ${FINAL_LOG}"
-create_log
+write_log "$(report_block)"
 exit 0
